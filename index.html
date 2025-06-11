@@ -277,6 +277,10 @@
                 imageFileNameEl.textContent = 'No file selected.';
                 return;
             }
+            if (!file.type.startsWith('image/')) {
+                alert('Please select a valid image file (e.g., JPG, PNG).');
+                return;
+            }
             if (file.size > 4 * 1024 * 1024) {
                  alert("File is too large. Please select an image under 4MB.");
                  return;
@@ -285,7 +289,8 @@
             showLoader();
             try {
                 const base64ImageData = await toBase64(file);
-                await analyzeImageWithAI(base64ImageData);
+                // Pass the file's actual MIME type for better accuracy
+                await analyzeImageWithAI(base64ImageData, file.type);
             } catch (error) {
                 console.error("Error processing image:", error);
                 alert("Could not process the image. Please try again or enter values manually.");
@@ -301,37 +306,55 @@
             reader.onerror = error => reject(error);
         });
 
-        async function analyzeImageWithAI(base64ImageData) {
+        async function analyzeImageWithAI(base64ImageData, mimeType) {
             const prompt = `
-                Analyze the provided image of a medical lab report, likely an ABG.
-                Extract the following numerical values: pH, PaCO2 (pCO2), PaO2 (pO2), HCO3 (bicarb), Na (sodium), K (potassium), Cl (chloride), Lactate, Albumin.
-                Identify values even with slightly different labels. Guess values based on typical report order and plausible ranges if labels are unclear.
-                Return a single, minified JSON object with keys: "ph", "paco2", "pao2", "hco3", "na", "k", "cl", "lactate", "albumin".
-                If a value isn't found, its key should be null. Do not add any text outside the JSON object.
+                Analyze the provided image of a medical lab report, likely an ABG panel.
+                Your task is to meticulously extract the following numerical values. Be precise.
+                Look for: pH, PaCO2 (or pCO2), PaO2 (or pO2), HCO3 (or bicarb), Na (or Sodium), K (or Potassium), Cl (or Chloride), Lactate, Albumin, and FiO2.
+                These values might have different labels or be in various positions. Use your knowledge of typical lab reports to identify them.
+                Your response MUST be a single, minified JSON object. Do not include any explanatory text, markdown formatting like \`\`\`json, or anything else outside the JSON object.
+                The JSON object must have these exact keys: "ph", "paco2", "pao2", "hco3", "na", "k", "cl", "lactate", "albumin", "fio2".
+                If you cannot find a specific value in the image, its corresponding key in the JSON object must be null. Do not omit any keys.
+                Example of a perfect response: {"ph":7.35,"paco2":40,"pao2":95,"hco3":24,"na":140,"k":4.1,"cl":100,"lactate":1.1,"albumin":4.0,"fio2":null}
             `;
             const payload = {
-                contents: [{ role: "user", parts: [{ text: prompt }, { inlineData: { mimeType: "image/jpeg", data: base64ImageData } }] }],
+                contents: [{ 
+                    role: "user", 
+                    parts: [
+                        { text: prompt }, 
+                        { inlineData: { mimeType: mimeType, data: base64ImageData } }
+                    ] 
+                }],
             };
-            const apiKey = ""; // Provided by Canvas
+            const apiKey = ""; // Provided by Canvas environment
             const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
 
             try {
                 const response = await fetch(apiUrl, {
                     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
                 });
-                if (!response.ok) throw new Error(`API request failed: ${response.status}`);
+
+                if (!response.ok) {
+                    const errorBody = await response.text();
+                    console.error("API Error Response:", errorBody);
+                    throw new Error(`API request failed with status ${response.status}: ${response.statusText}`);
+                }
+
                 const result = await response.json();
-                if (result.candidates && result.candidates[0].content && result.candidates[0].content.parts[0]) {
-                    const jsonText = result.candidates[0].content.parts[0].text.replace(/```json|```/g, '').trim();
+                
+                if (result.candidates && result.candidates[0].content && result.candidates[0].content.parts[0] && result.candidates[0].content.parts[0].text) {
+                    // Clean the response text robustly, removing potential markdown and trimming whitespace.
+                    const jsonText = result.candidates[0].content.parts[0].text.replace(/```json/g, '').replace(/```/g, '').trim();
                     const parsedData = JSON.parse(jsonText);
                     populateForm(parsedData);
                     analyzeBtn.click();
                 } else {
-                    throw new Error("No valid content in AI response.");
+                     console.error("Invalid AI response structure:", JSON.stringify(result, null, 2));
+                    throw new Error("No valid content found in the AI's response.");
                 }
             } catch (error) {
                 console.error("AI Analysis Error:", error);
-                alert("Failed to analyze image with AI. Please check console for details.");
+                alert(`Failed to analyze image with AI. Please check the console for technical details. Error: ${error.message}`);
             }
         }
         
@@ -340,8 +363,8 @@
                 const element = document.getElementById(key);
                 if (element && data[key] !== null) {
                     element.value = data[key];
-                    // Trigger label animation
-                    element.dispatchEvent(new Event('input')); 
+                    // Manually trigger an input event to make the label animate correctly
+                    element.dispatchEvent(new Event('input', { bubbles: true }));
                 }
             }
         }
